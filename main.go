@@ -106,14 +106,15 @@ func (d *DownloadFileTask) downlaodFile() string {
 	fmt.Printf("  %v\n", resp.HTTPResponse.Status)
 
 	// start UI loop
-	t := time.NewTicker(500 * time.Millisecond)
+	t := time.NewTicker(20 * time.Second)
 	defer t.Stop()
 
 Loop:
 	for {
 		select {
 		case <-t.C:
-			fmt.Printf("  transferred %v / %v bytes (%.2f%%)\n",
+			fmt.Printf("%s\n  transferred %v / %v bytes (%.2f%%)\n",
+				req.URL(),
 				resp.BytesComplete(),
 				resp.Size,
 				100*resp.Progress())
@@ -184,5 +185,5 @@ func NewCacheFileHanlder(root string) *CacheFileHanlder {
 }
 
 func main() {
-	log.Fatal(http.ListenAndServe(":8080", NewCacheFileHanlder("./")))
+	log.Fatal(http.ListenAndServe(":80", NewCacheFileHanlder("./")))
 }
