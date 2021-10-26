@@ -68,12 +68,12 @@ func createDownloadFileTask(dst, urlStr string) DownloadFileTask {
 		path, _ := filepath.Split(dst)
 		fmt.Printf("create dir: %s\n", path)
 		if err := os.MkdirAll(path, os.ModeDir|0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Create Dir Fail: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[ERR]Create Dir Fail: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Printf("mv file %s to %s\n", file, dst)
 		if err := os.Rename(file, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "move download file fail: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[ERR] %s\n move download file fail: %v\n", dst, err)
 			os.Exit(1)
 		}
 		d.done <- struct{}{}
@@ -126,11 +126,11 @@ Loop:
 	}
 
 	if err := resp.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Download failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s\n Download failed: %v\n", req.URL(), err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Download saved to ./%v \n", resp.Filename)
+	fmt.Printf("%s\n Download saved to ./%v \n", req.URL(), resp.Filename)
 	return resp.Filename
 }
 
