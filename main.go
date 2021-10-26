@@ -139,7 +139,7 @@ type CacheFileHanlder struct {
 }
 
 func getOriginUrl(r *http.Request) string {
-	return fmt.Sprintf("http://%s%s", r.Host, r.URL.String())
+	return fmt.Sprintf("http://%s%s", r.Host, r.URL.Path)
 }
 
 func isSlashRune(r rune) bool { return r == '/' || r == '\\' }
@@ -163,7 +163,7 @@ func (h *CacheFileHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fullName := filepath.Join(h.root, filepath.FromSlash(path.Clean(r.URL.Path)))
-		fmt.Printf("fullname: %s\n", fullName)
+		// fmt.Printf("%s  -  fullname: %s\n", r.RemoteAddr, fullName)
 		if _, err := os.Stat(fullName); err == nil {
 			http.ServeFile(w, r, fullName)
 		} else {
