@@ -2,9 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
+	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -14,9 +13,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkg/errors"
+
+	"github.com/AvalonWot/filesrv/log"
+	"go.uber.org/zap"
+
 	"github.com/cavaliercoder/grab"
 )
 
+var _cfg *config
+var _filters *Filters
 var _mgr = DownloadFileTaskMgr{}
 
 var _resolver = &net.Resolver{
@@ -41,7 +47,7 @@ func (mgr *DownloadFileTaskMgr) CreateDownladTask(dst, urlStr string) {
 		mgr.tasks = make(map[string]DownloadFileTask, 100)
 	}
 	if _, ok := mgr.tasks[urlStr]; !ok {
-		fmt.Printf("create download task: %s\n", urlStr)
+		log.Info("创建下载任务", zap.String("path", dst), zap.String("url", urlStr))
 		task := createDownloadFileTask(dst, urlStr)
 		mgr.tasks[urlStr] = task
 		go func() {
@@ -64,24 +70,29 @@ func createDownloadFileTask(dst, urlStr string) DownloadFileTask {
 		done: make(chan struct{}),
 	}
 	go func() {
-		file := d.downlaodFile()
+		defer func() {
+			d.done <- struct{}{}
+		}()
+		file, err := d.downlaodFile()
+		if err != nil {
+			return
+		}
 		path, _ := filepath.Split(dst)
-		fmt.Printf("create dir: %s\n", path)
+		log.Info("创建目录", zap.String("path", path))
 		if err := os.MkdirAll(path, os.ModeDir|0755); err != nil {
-			fmt.Fprintf(os.Stderr, "[ERR]Create Dir Fail: %v\n", err)
+			log.Error("创建目录失败", zap.String("path", path), zap.Error(err))
 			os.Exit(1)
 		}
-		fmt.Printf("mv file %s to %s\n", file, dst)
+		log.Info("移动文件", zap.String("file", file), zap.String("dst", dst))
 		if err := os.Rename(file, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "[ERR] %s\n move download file fail: %v\n", dst, err)
+			log.Error("移动下载文件失败", zap.String("path", path), zap.String("dst", dst), zap.Error(err))
 			os.Exit(1)
 		}
-		d.done <- struct{}{}
 	}()
 	return d
 }
 
-func (d *DownloadFileTask) downlaodFile() string {
+func (d *DownloadFileTask) downlaodFile() (string, error) {
 	// 使用外部的dns进行解析, 避免被本地的路由配置的dns劫持弄成回环
 	dialer := &net.Dialer{
 		Timeout:  15 * time.Second,
@@ -101,9 +112,9 @@ func (d *DownloadFileTask) downlaodFile() string {
 	req, _ := grab.NewRequest(".", d.Url)
 
 	// start download
-	fmt.Printf("Downloading %v...\n", req.URL())
+	log.Info("Downloading", zap.String("url", req.URL().String()))
 	resp := client.Do(req)
-	fmt.Printf("  %v\n", resp.HTTPResponse.Status)
+	log.Info("下载返回的状态码", zap.String("status", resp.HTTPResponse.Status))
 
 	// start UI loop
 	t := time.NewTicker(20 * time.Second)
@@ -113,11 +124,11 @@ Loop:
 	for {
 		select {
 		case <-t.C:
-			fmt.Printf("%s\n  transferred %v / %v bytes (%.2f%%)\n",
-				req.URL(),
-				resp.BytesComplete(),
-				resp.Size,
-				100*resp.Progress())
+			log.Info("下载进度",
+				zap.String("url", req.URL().String()),
+				zap.Int64("completed", resp.BytesComplete()),
+				zap.Int64("all_size", resp.Size),
+				zap.Float64("progress", 100*resp.Progress()))
 
 		case <-resp.Done:
 			// download is complete
@@ -126,12 +137,12 @@ Loop:
 	}
 
 	if err := resp.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n Download failed: %v\n", req.URL(), err)
-		os.Exit(1)
+		log.Error("下载发生错误", zap.Error(err))
+		return "", errors.WithMessage(err, "下载发生错误")
 	}
 
-	fmt.Printf("%s\n Download saved to ./%v \n", req.URL(), resp.Filename)
-	return resp.Filename
+	log.Info("下载文件完成", zap.String("url", d.Url), zap.String("file_name", resp.Filename))
+	return resp.Filename, nil
 }
 
 type CacheFileHanlder struct {
@@ -163,18 +174,22 @@ func (h *CacheFileHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fullName := filepath.Join(h.root, filepath.FromSlash(path.Clean(r.URL.Path)))
-		// fmt.Printf("%s  -  fullname: %s\n", r.RemoteAddr, fullName)
-		if _, err := os.Stat(fullName); err == nil {
-			http.ServeFile(w, r, fullName)
-		} else {
+		log.Info("文件请求", zap.String("remote", r.RemoteAddr), zap.String("fullname", fullName))
+		originUrl := getOriginUrl(r)
+		if !_filters.Match(originUrl) {
+			http.Error(w, "invalid path", 404)
+			return
+		}
+		if _, err := os.Stat(fullName); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				_mgr.CreateDownladTask(fullName, getOriginUrl(r))
+				_mgr.CreateDownladTask(fullName, originUrl)
 				http.Error(w, "wait for downloading", 404)
 			} else {
 				fmt.Printf("[ERR] unknonw err: %v\n", err)
 				http.Error(w, "unknow err", 500)
 			}
 		}
+		http.ServeFile(w, r, fullName)
 	} else {
 		http.Error(w, "invalid method", 500)
 	}
@@ -184,6 +199,26 @@ func NewCacheFileHanlder(root string) *CacheFileHanlder {
 	return &CacheFileHanlder{root: root}
 }
 
+var cfgPath = flag.String("cfg", "", "config path")
+
 func main() {
-	log.Fatal(http.ListenAndServe(":80", NewCacheFileHanlder("./")))
+	flag.Parse()
+	cfg, err := ParseConfig(*cfgPath)
+	if err != nil {
+		fmt.Printf("解析配置文件发生错误: %v", err)
+		return
+	}
+	_cfg = cfg
+	log.InitLog(_cfg.LogPath, _cfg.Verbose)
+
+	_filters, err = NewFilters(_cfg.Filters)
+	if err != nil {
+		fmt.Printf("解析filters发生错误: %v", err)
+		return
+	}
+
+	if err := http.ListenAndServe(_cfg.Listen, NewCacheFileHanlder(_cfg.FilesPath)); err != nil {
+		fmt.Printf("启动http服务错误: %v", err)
+		return
+	}
 }
