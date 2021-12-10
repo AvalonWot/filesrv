@@ -22,7 +22,6 @@ import (
 )
 
 var _cfg *config
-var _filters *Filters
 var _mgr = DownloadFileTaskMgr{}
 
 var _resolver = &net.Resolver{
@@ -31,7 +30,7 @@ var _resolver = &net.Resolver{
 		d := net.Dialer{
 			Timeout: time.Millisecond * time.Duration(10000),
 		}
-		return d.DialContext(ctx, network, "114.114.114.114:53")
+		return d.DialContext(ctx, network, "192.168.1.1:53")
 	},
 }
 
@@ -109,12 +108,16 @@ func (d *DownloadFileTask) downlaodFile() (string, error) {
 			},
 		},
 	}
-	req, _ := grab.NewRequest(".", d.Url)
+	req, err := grab.NewRequest(".", d.Url)
+	if err != nil {
+		log.Error("创建下载任务错误", zap.Error(err))
+		return "", errors.WithMessage(err, "创建下载任务错误")
+	}
 
 	// start download
 	log.Info("Downloading", zap.String("url", req.URL().String()))
 	resp := client.Do(req)
-	log.Info("下载返回的状态码", zap.String("status", resp.HTTPResponse.Status))
+	// log.Info("下载返回的状态码", zap.String("status", resp.HTTPResponse.Status))
 
 	// start UI loop
 	t := time.NewTicker(20 * time.Second)
@@ -174,12 +177,8 @@ func (h *CacheFileHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fullName := filepath.Join(h.root, filepath.FromSlash(path.Clean(r.URL.Path)))
-		log.Info("文件请求", zap.String("remote", r.RemoteAddr), zap.String("fullname", fullName))
 		originUrl := getOriginUrl(r)
-		if !_filters.Match(originUrl) {
-			http.Error(w, "invalid path", 404)
-			return
-		}
+		log.Info("文件请求", zap.String("remote", r.RemoteAddr), zap.String("fullname", fullName), zap.String("origin_url", originUrl))
 		if _, err := os.Stat(fullName); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				_mgr.CreateDownladTask(fullName, originUrl)
@@ -188,8 +187,10 @@ func (h *CacheFileHanlder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				fmt.Printf("[ERR] unknonw err: %v\n", err)
 				http.Error(w, "unknow err", 500)
 			}
+			return
+		} else {
+			http.ServeFile(w, r, fullName)
 		}
-		http.ServeFile(w, r, fullName)
 	} else {
 		http.Error(w, "invalid method", 500)
 	}
@@ -210,12 +211,6 @@ func main() {
 	}
 	_cfg = cfg
 	log.InitLog(_cfg.LogPath, _cfg.Verbose)
-
-	_filters, err = NewFilters(_cfg.Filters)
-	if err != nil {
-		fmt.Printf("解析filters发生错误: %v", err)
-		return
-	}
 
 	if err := http.ListenAndServe(_cfg.Listen, NewCacheFileHanlder(_cfg.FilesPath)); err != nil {
 		fmt.Printf("启动http服务错误: %v", err)
