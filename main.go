@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -83,7 +84,7 @@ func createDownloadFileTask(dst, urlStr string) DownloadFileTask {
 			os.Exit(1)
 		}
 		log.Info("移动文件", zap.String("file", file), zap.String("dst", dst))
-		if err := os.Rename(file, dst); err != nil {
+		if err := Move(file, dst); err != nil {
 			log.Error("移动下载文件失败", zap.String("path", path), zap.String("dst", dst), zap.Error(err))
 			os.Exit(1)
 		}
@@ -216,4 +217,42 @@ func main() {
 		fmt.Printf("启动http服务错误: %v", err)
 		return
 	}
+}
+
+func Move(source, destination string) error {
+	err := os.Rename(source, destination)
+	if err != nil && strings.Contains(err.Error(), "invalid cross-device link") {
+		return moveCrossDevice(source, destination)
+	}
+	return err
+}
+
+func moveCrossDevice(source, destination string) error {
+	src, err := os.Open(source)
+	if err != nil {
+		return errors.Wrap(err, "Open(source)")
+	}
+	dst, err := os.Create(destination)
+	if err != nil {
+		src.Close()
+		return errors.Wrap(err, "Create(destination)")
+	}
+	_, err = io.Copy(dst, src)
+	src.Close()
+	dst.Close()
+	if err != nil {
+		return errors.Wrap(err, "Copy")
+	}
+	fi, err := os.Stat(source)
+	if err != nil {
+		os.Remove(destination)
+		return errors.Wrap(err, "Stat")
+	}
+	err = os.Chmod(destination, fi.Mode())
+	if err != nil {
+		os.Remove(destination)
+		return errors.Wrap(err, "Stat")
+	}
+	os.Remove(source)
+	return nil
 }
